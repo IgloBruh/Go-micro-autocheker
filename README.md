@@ -1,284 +1,97 @@
-\# 🚀 AutoCheck Microservices
+# 🚀 AutoCheck Microservices
 
+![Go](https://img.shields.io/badge/Go-1.22+-00ADD8?logo=go)
+![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker)
+![Redis](https://img.shields.io/badge/Redis-Queue-red?logo=redis)
+![MinIO](https://img.shields.io/badge/MinIO-S3--storage-orange)
+![License](https://img.shields.io/badge/license-MIT-green)
 
+Микросервисная система для автоматической проверки пользовательского
+кода на тестах.
 
-Микросервисная система для автоматической проверки решений задач на Python.
+------------------------------------------------------------------------
 
+## 🧩 Архитектура
 
+``` mermaid
+flowchart LR
+    Client[Client HTTP] --> Gateway[API Gateway]
+    Gateway --> RedisQueue[Redis Queue]
+    RedisQueue --> Worker[Worker]
+    Worker --> MinIO[MinIO Storage]
 
-\## 📡 Архитектура
-
-
-
+    Worker --> RedisPubSub[Redis Pub/Sub]
+    RedisPubSub --> Gateway
+    Gateway --> Client
 ```
 
-Client (HTTP) → API Gateway (gRPC) → Redis Queue → Worker ←→ MinIO
+------------------------------------------------------------------------
 
-&#x20;                   ↑                                  │
+## ⚙️ Компоненты
 
-&#x20;                   └────────── Redis Pub/Sub ←───────┘
+### 🔹 Gateway
 
-```
+-   HTTP API для клиентов\
+-   gRPC сервис для внутреннего взаимодействия\
+-   Управление задачами и статусами
 
+### 🔹 Worker
 
+-   Выполнение пользовательского кода\
+-   Прогон тестов\
+-   Сравнение результатов
 
-\### Компоненты
+### 🔹 Redis
 
+-   Очередь задач\
+-   Pub/Sub события\
+-   Хранение состояния
 
+### 🔹 MinIO
 
-| Компонент     | Назначение |
+-   Хранение:
+    -   тестов\
+    -   пользовательского кода\
+    -   результатов
 
-|---------------|------------|
+------------------------------------------------------------------------
 
-| \*\*Gateway\*\*   | HTTP API для клиента + внутренний gRPC сервер |
+## 🔄 Поток обработки
 
-| \*\*Worker\*\*    | Запуск пользовательского кода, сравнение результатов |
+1.  `POST /api/v1/runs` --- создание запуска\
 
-| \*\*Redis\*\*     | Очередь заданий, канал событий (pub/sub), хранение статусов |
+2.  Gateway:
 
-| \*\*MinIO\*\*     | S3-совместимое хранилище тестов, кода и артефактов |
+    -   вызывает `SubmitRun` (gRPC)
+    -   сохраняет код в MinIO
+    -   кладёт задачу в Redis
+    -   статус → `PENDING`
 
+3.  Worker:
 
+    -   берёт задачу
+    -   скачивает код и тесты
+    -   выполняет проверки
 
-\## 🔄 Поток обработки запроса
+4.  После выполнения:
 
+    -   сохраняет результат в MinIO
+    -   отправляет событие в Redis Pub/Sub
 
+5.  Gateway обновляет статус
 
-```
+6.  `GET /api/v1/runs/{id}` --- получение результата
 
-1\. Клиент → POST /api/v1/runs
+------------------------------------------------------------------------
 
-2\. Gateway → сохраняет код в MinIO
+## 🚀 Быстрый старт
 
-3\. Gateway → ставит задачу в Redis Queue (status=PENDING)
-
-4\. Worker → забирает задачу из очереди
-
-5\. Worker → скачивает код и тесты из MinIO
-
-6\. Worker → запускает проверки
-
-7\. Worker → сохраняет результат в MinIO
-
-8\. Worker → публикует событие в Redis Pub/Sub
-
-9\. Gateway → обновляет статус
-
-10\. Клиент → GET /api/v1/runs/{id} получает результат
-
-```
-
-
-
-\## 🐳 Быстрый старт
-
-
-
-```bash
-
+``` bash
 docker compose up --build
-
 ```
 
+------------------------------------------------------------------------
 
+## 📜 License
 
-\### Порты после запуска
-
-
-
-| Сервис                | Адрес                         |
-
-|----------------------|-------------------------------|
-
-| HTTP API (gateway)   | http://localhost:8080         |
-
-| gRPC API (gateway)   | localhost:9090                |
-
-| MinIO Console        | http://localhost:9001         |
-
-| MinIO S3 API         | http://localhost:9000         |
-
-
-
-\## 📝 Примеры использования
-
-
-
-\### Создание проверки (POST)
-
-
-
-```bash
-
-curl -X POST http://localhost:8080/api/v1/runs \\
-
-&#x20; -H 'Content-Type: application/json' \\
-
-&#x20; -d '{
-
-&#x20;   "task": 0,
-
-&#x20;   "timeout\_ms": 1000,
-
-&#x20;   "code": "a,b=map(int,input().split());print(a+b)"
-
-&#x20; }'
-
-```
-
-
-
-\### Получение результата (GET)
-
-
-
-```bash
-
-curl http://localhost:8080/api/v1/runs/<run\_id>
-
-```
-
-
-
-\### Пример ответа
-
-
-
-```json
-
-{
-
-&#x20; "id": "abc-123",
-
-&#x20; "status": "DONE",
-
-&#x20; "task": 0,
-
-&#x20; "results": \[
-
-&#x20;   {
-
-&#x20;     "test\_num": 0,
-
-&#x20;     "status": "OK",
-
-&#x20;     "time\_ms": 12,
-
-&#x20;     "input\_file": "input0.txt",
-
-&#x20;     "output": "3\\n",
-
-&#x20;     "error": ""
-
-&#x20;   }
-
-&#x20; ]
-
-}
-
-```
-
-
-
-\## ⚙️ Как работает Worker
-
-
-
-\- Код выполняется в изолированном процессе:  
-
-&#x20; `python3 -u -c "<user\_code>"`
-
-\- Для каждого теста устанавливается таймаут (`timeout\_ms`)
-
-\- Результат сравнивается с ожидаемым выводом
-
-\- Всё выполняется без Docker-in-Docker — стабильно работает в `docker-compose`
-
-
-
-\## 🛠 Локальный запуск (без Docker)
-
-
-
-\*\*Требования:\*\*  
-
-\- Redis  
-
-\- MinIO (или любой S3-совместимый storage)  
-
-\- Go 1.22+  
-
-\- Python 3
-
-
-
-```bash
-
-go run ./cmd/gateway
-
-go run ./cmd/worker
-
-```
-
-
-
-> 💡 При старте gateway автоматически загружает тесты из `testdata/minio/tests` в MinIO.
-
-
-
-\## 📁 Структура проекта
-
-
-
-```
-
-.
-
-├── cmd/
-
-│   ├── gateway/          # точка входа HTTP/gRPC сервера
-
-│   └── worker/           # точка входа воркера
-
-├── internal/
-
-│   ├── service/          # gRPC сервис gateway
-
-│   ├── httpapi/          # HTTP API для клиента
-
-│   ├── queue/            # работа с Redis (очередь + pub/sub)
-
-│   ├── storage/          # работа с MinIO (S3)
-
-│   └── runner/           # запуск кода, анализ тестов
-
-├── testdata/
-
-│   └── minio/tests/      # тесты, загружаемые при старте
-
-└── docker-compose.yml
-
-```
-
-
-
-\## 🧩 Возможные статусы выполнения
-
-
-
-| Статус     | Описание                        |
-
-|------------|---------------------------------|
-
-| `PENDING`  | Задача в очереди                |
-
-| `RUNNING`  | Выполняется воркером            |
-
-| `DONE`     | Завершено успешно               |
-
-| `ERROR`    | Ошибка выполнения или таймаут   |
-
-
-
-
-
+MIT
